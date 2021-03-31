@@ -1,31 +1,34 @@
 #! python3
-# EMAscraper v1.0
+# EMAscraper v1.1
 # Downloads all PDFs from European Medicines Agency search results to ./output
 
 # Define the URL of the EMA search action here
 url = 'https://www.ema.europa.eu/en/medicines/ema_group_types/ema_pip/field_ema_pip_decision_type%253Aname_field/RP%3A%20decision%20refers%20to%20a%20refusal%20on%20a%20proposed%20Paediatric%20Investigation%20Plan'
 
 # Load the libraries
-import requests, re, sys, os, math
+import requests, re, sys, os, math, threading
 from pathlib import Path
 from bs4 import BeautifulSoup
 
-os.makedirs('output', exist_ok=True)    # Makes the ./output directory
+os.makedirs('output', exist_ok=True)  # Makes the ./output directory
 
 # Sets some variables
 directory = '.' if not sys.argv[1:] else sys.argv[1]
 links = []
-pdfNumber = 0
+downloadThreads = []
+maxThreads = 100
+sema = threading.Semaphore(value=maxThreads)
 
 # Defines the function to request the page from a url and parse it
 def getPageAndParse(url):
     global soup
-    res=requests.get(url)
+    res = requests.get(url)
     try:
         res.raise_for_status()
     except Exception as exc:
         print('There was a problem: %s' % (exc))
     soup = BeautifulSoup(res.text, 'html.parser')
+
 
 # Gets the search hit links from the current page
 def getLinksFromPage(url):
@@ -45,19 +48,21 @@ for i in range(0, numPages):
     urlPage = url + '?page=' + str(i)
     getLinksFromPage(urlPage)
 
+
 # Downloads all PDFs from the search hit
 def downloadPDFs(url):
     getPageAndParse(url)
     headerElem = soup.select('h1')[0].text
 
-    print('This is page: '+ url + ' (%s)' % (headerElem))
-    if r"/" in headerElem:                          # Replaces slashes with dashes in header element
+    print('This is page: ' + url + ' (%s)' % (headerElem))
+    if r"/" in headerElem:  # Replaces slashes with dashes in header element
         headerElem = headerElem.replace("/", "-")
 
     links = soup.findAll('a', href=re.compile("\.pdf$"))
 
+    pdfNumber = 0
+
     for el in links:
-        global pdfNumber
         pdfNumber = pdfNumber + 1
         print("Downloading pdf: " + el['href'])
         pdfURL = el['href']
@@ -72,10 +77,19 @@ def downloadPDFs(url):
         for chunk in res.iter_content(100000):
             pdfFile.write(chunk)
 
-    pdfNumber = 0
     pdfFile.close()
 
-# Downloads the PDFs from all search hits
-for link in links:
+# Downloads the PDFs from the list of search hits
+def processSearchHits(SearchHit):
+    global links
+    sema.acquire()
+    link = links[SearchHit]
     urlSearchHit = 'https://www.ema.europa.eu' + link
     downloadPDFs(urlSearchHit)
+    sema.release()
+
+# Create and start the thread objects
+for i in range(numResults):
+    downloadThread = threading.Thread(target=processSearchHits, args=(i,))
+    downloadThreads.append(downloadThread)
+    downloadThread.start()
